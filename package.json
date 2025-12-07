@@ -1,6 +1,6 @@
 {
   "name": "local-webview-spa-router",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "type": "module",
   "description": "A router to allow local routing of the most popular SPA routers in webviews and file:// protocol. Works with React Router, Vue Router, Angular Router, Framework7, and all popular SPA frameworks.",
   "main": "dist/index.js",
