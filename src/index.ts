@@ -117,35 +117,147 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
             // Store original getter before overriding
             const originalPathnameGetter = prototypePathname.get;
             
-            // Override on prototype
-            Object.defineProperty(LocationPrototype, 'pathname', {
-              get: function() {
-                // Only override for file:// protocol
-                if (this.protocol === 'file:') {
-                  const hash = this.hash;
-                  if (hash && hash !== '#' && hash !== '#/') {
-                    return hash.replace(/^#/, '');
+            // Try Object.defineProperty first
+            try {
+              Object.defineProperty(LocationPrototype, 'pathname', {
+                get: function() {
+                  // Only override for file:// protocol
+                  if (this.protocol === 'file:') {
+                    const hash = this.hash;
+                    if (hash && hash !== '#' && hash !== '#/') {
+                      return hash.replace(/^#/, '');
+                    }
+                    return '/';
                   }
+                  // For non-file protocols, use original getter
+                  if (originalPathnameGetter) {
+                    return originalPathnameGetter.call(this);
+                  }
+                  // Fallback if no original getter
                   return '/';
+                },
+                configurable: true,
+                enumerable: true
+              });
+              pathnameOverrideSucceeded = true;
+              log('Overrode location.pathname getter on Location prototype');
+            } catch (defineError) {
+              // Try Reflect.defineProperty as alternative
+              try {
+                const success = Reflect.defineProperty(LocationPrototype, 'pathname', {
+                  get: function() {
+                    if (this.protocol === 'file:') {
+                      const hash = this.hash;
+                      if (hash && hash !== '#' && hash !== '#/') {
+                        return hash.replace(/^#/, '');
+                      }
+                      return '/';
+                    }
+                    if (originalPathnameGetter) {
+                      return originalPathnameGetter.call(this);
+                    }
+                    return '/';
+                  },
+                  configurable: true,
+                  enumerable: true
+                });
+                if (success) {
+                  pathnameOverrideSucceeded = true;
+                  log('Overrode location.pathname getter on Location prototype (using Reflect)');
+                } else {
+                  log('Reflect.defineProperty returned false for Location prototype');
                 }
-                // For non-file protocols, use original getter
-                if (originalPathnameGetter) {
-                  return originalPathnameGetter.call(this);
-                }
-                // Fallback if no original getter
-                return '/';
-              },
-              configurable: true,
-              enumerable: true
-            });
-            pathnameOverrideSucceeded = true;
-            log('Overrode location.pathname getter on Location prototype');
+              } catch (reflectError) {
+                log('Could not override Location prototype pathname with Reflect:', reflectError);
+              }
+            }
             // Note: This may not work if instance property shadows prototype, but worth trying
           } else {
-            log('Location prototype pathname also not configurable');
+            log('Location prototype pathname also not configurable', {
+              configurable: prototypePathname?.configurable,
+              enumerable: prototypePathname?.enumerable,
+              writable: prototypePathname?.writable
+            });
           }
         } catch (prototypeError) {
           log('Could not override Location prototype pathname:', prototypeError);
+        }
+        
+        // Try overriding on constructor prototype (deeper in prototype chain)
+        if (!pathnameOverrideSucceeded) {
+          try {
+            const LocationConstructor = window.location.constructor;
+            if (LocationConstructor && LocationConstructor.prototype) {
+              const constructorPrototypePathname = Object.getOwnPropertyDescriptor(LocationConstructor.prototype, 'pathname');
+              if (constructorPrototypePathname && constructorPrototypePathname.configurable) {
+                const originalPathnameGetter = constructorPrototypePathname.get;
+                try {
+                  Object.defineProperty(LocationConstructor.prototype, 'pathname', {
+                    get: function() {
+                      if (this.protocol === 'file:') {
+                        const hash = this.hash;
+                        if (hash && hash !== '#' && hash !== '#/') {
+                          return hash.replace(/^#/, '');
+                        }
+                        return '/';
+                      }
+                      if (originalPathnameGetter) {
+                        return originalPathnameGetter.call(this);
+                      }
+                      return '/';
+                    },
+                    configurable: true,
+                    enumerable: true
+                  });
+                  pathnameOverrideSucceeded = true;
+                  log('Overrode location.pathname getter on Location constructor prototype');
+                } catch (constructorError) {
+                  log('Could not override Location constructor prototype pathname:', constructorError);
+                }
+              }
+            }
+          } catch (constructorError) {
+            log('Could not access Location constructor prototype:', constructorError);
+          }
+        }
+        
+        // Try deeper prototype chain (Object.getPrototypeOf(Object.getPrototypeOf(...)))
+        if (!pathnameOverrideSucceeded) {
+          try {
+            const LocationPrototype = Object.getPrototypeOf(window.location);
+            const DeeperPrototype = Object.getPrototypeOf(LocationPrototype);
+            if (DeeperPrototype) {
+              const deeperPrototypePathname = Object.getOwnPropertyDescriptor(DeeperPrototype, 'pathname');
+              if (deeperPrototypePathname && deeperPrototypePathname.configurable) {
+                const originalPathnameGetter = deeperPrototypePathname.get;
+                try {
+                  Object.defineProperty(DeeperPrototype, 'pathname', {
+                    get: function() {
+                      if (this.protocol === 'file:') {
+                        const hash = this.hash;
+                        if (hash && hash !== '#' && hash !== '#/') {
+                          return hash.replace(/^#/, '');
+                        }
+                        return '/';
+                      }
+                      if (originalPathnameGetter) {
+                        return originalPathnameGetter.call(this);
+                      }
+                      return '/';
+                    },
+                    configurable: true,
+                    enumerable: true
+                  });
+                  pathnameOverrideSucceeded = true;
+                  log('Overrode location.pathname getter on deeper prototype chain');
+                } catch (deeperError) {
+                  log('Could not override deeper prototype pathname:', deeperError);
+                }
+              }
+            }
+          } catch (deeperError) {
+            log('Could not access deeper prototype chain:', deeperError);
+          }
         }
         
         // If prototype override also failed, try redirect strategy
@@ -177,29 +289,65 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
         }
       } else {
         // Property is configurable or doesn't exist, try to override on instance
-        Object.defineProperty(window.location, 'pathname', {
-          get: function() {
-            const hash = window.location.hash;
-            if (hash && hash !== '#' && hash !== '#/') {
-              return hash.replace(/^#/, '');
+        try {
+          Object.defineProperty(window.location, 'pathname', {
+            get: function() {
+              const hash = window.location.hash;
+              if (hash && hash !== '#' && hash !== '#/') {
+                return hash.replace(/^#/, '');
+              }
+              return '/';
+            },
+            configurable: true,
+            enumerable: true
+          });
+          pathnameOverrideSucceeded = true;
+          log('Overrode location.pathname getter');
+        } catch (defineError) {
+          // Try Reflect.defineProperty as alternative
+          try {
+            const success = Reflect.defineProperty(window.location, 'pathname', {
+              get: function() {
+                const hash = window.location.hash;
+                if (hash && hash !== '#' && hash !== '#/') {
+                  return hash.replace(/^#/, '');
+                }
+                return '/';
+              },
+              configurable: true,
+              enumerable: true
+            });
+            if (success) {
+              pathnameOverrideSucceeded = true;
+              log('Overrode location.pathname getter (using Reflect)');
+            } else {
+              log('Reflect.defineProperty returned false for location.pathname');
             }
-            return '/';
-          },
-          configurable: true,
-          enumerable: true
-        });
-        pathnameOverrideSucceeded = true;
-        log('Overrode location.pathname getter');
+          } catch (reflectError) {
+            log('Could not override location.pathname with Reflect:', reflectError);
+          }
+        }
         // Set initial hash if not present (after successful override)
-        if (!window.location.hash || window.location.hash === '' || window.location.hash === '#') {
+        if (pathnameOverrideSucceeded && (!window.location.hash || window.location.hash === '' || window.location.hash === '#')) {
           window.location.hash = '#/';
           log('Set initial hash to #/');
         }
       }
     } catch (e) {
-      console.warn('[WebviewSPARouter] Could not override location.pathname:', e);
+      // Enhanced error logging
+      const errorDetails: any = {
+        error: e,
+        pathnameDescriptor: pathnameOverride ? {
+          configurable: pathnameOverride.configurable,
+          enumerable: pathnameOverride.enumerable,
+          writable: pathnameOverride.writable,
+          hasGetter: !!pathnameOverride.get,
+          hasSetter: !!pathnameOverride.set
+        } : null
+      };
+      console.warn('[WebviewSPARouter] Could not override location.pathname:', errorDetails);
       
-      // Last resort: Try Location prototype
+      // Last resort: Try Location prototype with enhanced strategies
       if (!pathnameOverrideSucceeded) {
         try {
           const LocationPrototype = Object.getPrototypeOf(window.location);
@@ -209,26 +357,55 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
             // Store original getter before overriding
             const originalPathnameGetter = prototypePathname.get;
             
-            Object.defineProperty(LocationPrototype, 'pathname', {
-              get: function() {
-                if (this.protocol === 'file:') {
-                  const hash = this.hash;
-                  if (hash && hash !== '#' && hash !== '#/') {
-                    return hash.replace(/^#/, '');
+            try {
+              Object.defineProperty(LocationPrototype, 'pathname', {
+                get: function() {
+                  if (this.protocol === 'file:') {
+                    const hash = this.hash;
+                    if (hash && hash !== '#' && hash !== '#/') {
+                      return hash.replace(/^#/, '');
+                    }
+                    return '/';
+                  }
+                  // For non-file protocols, use original getter
+                  if (originalPathnameGetter) {
+                    return originalPathnameGetter.call(this);
                   }
                   return '/';
+                },
+                configurable: true,
+                enumerable: true
+              });
+              pathnameOverrideSucceeded = true;
+              log('Fallback: Overrode location.pathname getter on Location prototype');
+            } catch (defineError) {
+              // Try Reflect as alternative
+              try {
+                const success = Reflect.defineProperty(LocationPrototype, 'pathname', {
+                  get: function() {
+                    if (this.protocol === 'file:') {
+                      const hash = this.hash;
+                      if (hash && hash !== '#' && hash !== '#/') {
+                        return hash.replace(/^#/, '');
+                      }
+                      return '/';
+                    }
+                    if (originalPathnameGetter) {
+                      return originalPathnameGetter.call(this);
+                    }
+                    return '/';
+                  },
+                  configurable: true,
+                  enumerable: true
+                });
+                if (success) {
+                  pathnameOverrideSucceeded = true;
+                  log('Fallback: Overrode location.pathname getter on Location prototype (using Reflect)');
                 }
-                // For non-file protocols, use original getter
-                if (originalPathnameGetter) {
-                  return originalPathnameGetter.call(this);
-                }
-                return '/';
-              },
-              configurable: true,
-              enumerable: true
-            });
-            pathnameOverrideSucceeded = true;
-            log('Fallback: Overrode location.pathname getter on Location prototype');
+              } catch (reflectError) {
+                log('Could not override Location prototype pathname with Reflect:', reflectError);
+              }
+            }
           }
         } catch (prototypeError) {
           log('Could not override Location prototype pathname:', prototypeError);
