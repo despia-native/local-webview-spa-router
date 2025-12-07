@@ -337,14 +337,25 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     e.preventDefault();
     const hash = pathToHash(href);
     const route = hashToPath(hash);
-    window.location.hash = hash;
+    
+    log('Link click:', href, '->', hash, 'route:', route);
+    
     // Always use '/' as base pathname for file protocol to avoid file path issues
     const pathname = isFileProtocol ? '/' : window.location.pathname;
     // Store route information in state so routers can read it if pathname override fails
     const stateWithRoute = { ...(history.state || {}), route: route, pathname: route };
-    originalReplaceState(stateWithRoute, '', pathname + hash);
-    log('Link click:', href, '->', hash, 'route:', route);
     
+    // Update history state first with the new route
+    // This ensures the state is correct when hashchange fires
+    originalReplaceState(stateWithRoute, '', pathname + hash);
+    
+    // Set hash - this will trigger hashchange event, which will call hashChangeHandler
+    // The hashchange handler will dispatch popstate with the correct route
+    window.location.hash = hash;
+    
+    // Also dispatch popstate immediately to ensure routers detect the change synchronously
+    // Some routers check location immediately, so we need to dispatch right away
+    // The hashchange handler will also dispatch, but this ensures immediate detection
     window.dispatchEvent(new PopStateEvent('popstate', { 
       state: stateWithRoute 
     }));
