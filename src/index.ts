@@ -81,42 +81,79 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
   // CRITICAL FIX: Override pathname getter for file:// protocol
   let pathnameOverrideSucceeded = false;
   if (isFileProtocol) {
-    // Set initial hash if not present
-    if (!window.location.hash || window.location.hash === '') {
-      window.location.hash = '#/';
-      log('Set initial hash to #/');
-    }
+    const currentPath = window.location.pathname;
+    // Detect if we're on a full file path (contains directory separators or absolute path)
+    const isFullFilePath = currentPath && (
+      currentPath.includes('/') && currentPath.split('/').length > 2 ||
+      currentPath.startsWith('/Users/') ||
+      currentPath.startsWith('/home/') ||
+      currentPath.startsWith('C:\\') ||
+      currentPath.includes('\\')
+    );
     
     // Override location.pathname to return route from hash, not file path
     try {
       pathnameOverride = Object.getOwnPropertyDescriptor(window.location, 'pathname');
-      Object.defineProperty(window.location, 'pathname', {
-        get: function() {
-          const hash = window.location.hash;
-          if (hash && hash !== '#' && hash !== '#/') {
-            return hash.replace(/^#/, '');
-          }
-          return '/';
-        },
-        configurable: true,
-        enumerable: true
-      });
-      pathnameOverrideSucceeded = true;
-      log('Overrode location.pathname getter');
+      
+      // Check if the property is configurable before trying to override
+      if (pathnameOverride && !pathnameOverride.configurable) {
+        log('location.pathname is not configurable, using fallback strategy');
+        // If not configurable and we're on a full file path, redirect to index.html with hash
+        const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
+        if (isFullFilePath && !hasHash) {
+          // Extract directory and redirect to index.html with hash
+          const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
+          const newUrl = dir + 'index.html#/';
+          log('Redirecting to hash-based URL:', newUrl);
+          window.location.replace(newUrl);
+          return () => {}; // Return early - redirect will reload
+        }
+        // Set hash if not present (after checking if we need to redirect)
+        if (!hasHash) {
+          window.location.hash = '#/';
+          log('Set initial hash to #/');
+        }
+        // If we already have a hash, continue - routers should use hash routing
+        log('Using hash-based routing (pathname not configurable)');
+      } else {
+        // Property is configurable or doesn't exist, try to override
+        Object.defineProperty(window.location, 'pathname', {
+          get: function() {
+            const hash = window.location.hash;
+            if (hash && hash !== '#' && hash !== '#/') {
+              return hash.replace(/^#/, '');
+            }
+            return '/';
+          },
+          configurable: true,
+          enumerable: true
+        });
+        pathnameOverrideSucceeded = true;
+        log('Overrode location.pathname getter');
+        // Set initial hash if not present (after successful override)
+        if (!window.location.hash || window.location.hash === '' || window.location.hash === '#') {
+          window.location.hash = '#/';
+          log('Set initial hash to #/');
+        }
+      }
     } catch (e) {
       console.warn('[WebviewSPARouter] Could not override location.pathname:', e);
-      // Fallback: If we can't override pathname, we need to redirect immediately
-      // to a URL that uses hash routing, so React Router sees the correct path
-      const currentPath = window.location.pathname;
-      if (currentPath && !currentPath.endsWith('/index.html') && currentPath !== '/') {
-        // Extract the directory and redirect to index.html with hash
+      // Fallback: If we're on a full file path, redirect to index.html with hash
+      const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
+      if (isFullFilePath && !hasHash) {
         const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
         const newUrl = dir + 'index.html#/';
-        log('Redirecting to:', newUrl);
+        log('Fallback: Redirecting to hash-based URL:', newUrl);
         window.location.replace(newUrl);
-        // Return early - the redirect will reload the page
-        return () => {};
+        return () => {}; // Return early - redirect will reload
       }
+      // Set hash if not present (after checking if we need to redirect)
+      if (!hasHash) {
+        window.location.hash = '#/';
+        log('Set initial hash to #/');
+      }
+      // If we already have a hash, continue with hash-based routing
+      log('Using hash-based routing fallback (pathname override failed)');
     }
   }
 
@@ -125,7 +162,8 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     if (url && typeof url === 'string') {
       const hash = pathToHash(url);
       window.location.hash = hash;
-      const pathname = (isFileProtocol && pathnameOverrideSucceeded) ? '/' : window.location.pathname;
+      // Always use '/' as base pathname for file protocol to avoid file path issues
+      const pathname = isFileProtocol ? '/' : window.location.pathname;
       originalReplaceState(state, title, pathname + hash);
       log('pushState:', url, '->', hash);
       window.dispatchEvent(new PopStateEvent('popstate', { state: state }));
@@ -139,7 +177,8 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     if (url && typeof url === 'string') {
       const hash = pathToHash(url);
       window.location.hash = hash;
-      const pathname = (isFileProtocol && pathnameOverrideSucceeded) ? '/' : window.location.pathname;
+      // Always use '/' as base pathname for file protocol to avoid file path issues
+      const pathname = isFileProtocol ? '/' : window.location.pathname;
       originalReplaceState(state, title, pathname + hash);
       log('replaceState:', url, '->', hash);
       return;
@@ -149,7 +188,8 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
 
   // Handle hash changes and convert to popstate
   const hashChangeHandler = function() {
-    const pathname = (isFileProtocol && pathnameOverrideSucceeded) ? '/' : window.location.pathname;
+    // Always use '/' as base pathname for file protocol to avoid file path issues
+    const pathname = isFileProtocol ? '/' : window.location.pathname;
     originalReplaceState(null, '', pathname + window.location.hash);
     log('hashchange -> popstate');
     window.dispatchEvent(new PopStateEvent('popstate', { 
@@ -197,8 +237,9 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     }
     
     initTimeout = window.setTimeout(function() {
-      const path = hashToPath(window.location.hash);
-      originalReplaceState(null, '', path);
+      const hash = window.location.hash || '#/';
+      // Always use '/' as base pathname for file protocol to avoid file path issues
+      originalReplaceState(null, '', '/' + hash);
       log('Initial popstate event');
       window.dispatchEvent(new PopStateEvent('popstate', { 
         state: history.state 
@@ -248,20 +289,26 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
 // The UMD wrapper executes this code immediately when the script loads
 // We need to initialize BEFORE React Router reads window.location.pathname
 if (typeof window !== 'undefined' && typeof document !== 'undefined') {
-  // For UMD builds, initialize immediately when script executes
-  // This is critical - we must override pathname before React Router initializes
-  // Use a microtask to ensure it runs in the current execution context but before async scripts
-  if (document.readyState === 'loading') {
-    // DOM still loading - initialize immediately anyway (pathname override doesn't need DOM)
-    // Also set up DOMContentLoaded listener as backup
-        initWebviewSPARouter();
-    document.addEventListener('DOMContentLoaded', function() {
-      // Re-trigger popstate after DOM is ready
-      window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
-    }, { once: true });
-  } else {
-    // DOM already loaded, initialize immediately
-        initWebviewSPARouter();
+  // Guard against multiple initializations
+  const initKey = '__webview_spa_router_initialized__';
+  if (!(window as any)[initKey]) {
+    (window as any)[initKey] = true;
+    
+    // For UMD builds, initialize immediately when script executes
+    // This is critical - we must override pathname before React Router initializes
+    // Use a microtask to ensure it runs in the current execution context but before async scripts
+    if (document.readyState === 'loading') {
+      // DOM still loading - initialize immediately anyway (pathname override doesn't need DOM)
+      // Also set up DOMContentLoaded listener as backup
+      initWebviewSPARouter();
+      document.addEventListener('DOMContentLoaded', function() {
+        // Re-trigger popstate after DOM is ready
+        window.dispatchEvent(new PopStateEvent('popstate', { state: history.state }));
+      }, { once: true });
+    } else {
+      // DOM already loaded, initialize immediately
+      initWebviewSPARouter();
+    }
   }
 }
 
