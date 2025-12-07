@@ -97,26 +97,86 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
       
       // Check if the property is configurable before trying to override
       if (pathnameOverride && !pathnameOverride.configurable) {
-        log('location.pathname is not configurable, using fallback strategy');
-        // If not configurable and we're on a full file path, redirect to index.html with hash
-        const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
-        if (isFullFilePath && !hasHash) {
-          // Extract directory and redirect to index.html with hash
-          const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
-          const newUrl = dir + 'index.html#/';
-          log('Redirecting to hash-based URL:', newUrl);
-          window.location.replace(newUrl);
-          return () => {}; // Return early - redirect will reload
+        log('location.pathname is not configurable on instance, trying to delete and override prototype');
+        
+        // Try to delete the instance property first (will fail if non-configurable, but worth trying)
+        try {
+          delete (window.location as any).pathname;
+          log('Successfully deleted instance pathname property');
+        } catch (deleteError) {
+          log('Could not delete instance pathname property (non-configurable)');
         }
-        // Set hash if not present (after checking if we need to redirect)
-        if (!hasHash) {
-          window.location.hash = '#/';
-          log('Set initial hash to #/');
+        
+        // Try to override on Location prototype as fallback
+        // Note: This may not work if instance property shadows prototype, but worth trying
+        try {
+          const LocationPrototype = Object.getPrototypeOf(window.location);
+          const prototypePathname = Object.getOwnPropertyDescriptor(LocationPrototype, 'pathname');
+          
+          if (prototypePathname && prototypePathname.configurable) {
+            // Store original getter before overriding
+            const originalPathnameGetter = prototypePathname.get;
+            
+            // Override on prototype
+            Object.defineProperty(LocationPrototype, 'pathname', {
+              get: function() {
+                // Only override for file:// protocol
+                if (this.protocol === 'file:') {
+                  const hash = this.hash;
+                  if (hash && hash !== '#' && hash !== '#/') {
+                    return hash.replace(/^#/, '');
+                  }
+                  return '/';
+                }
+                // For non-file protocols, use original getter
+                if (originalPathnameGetter) {
+                  return originalPathnameGetter.call(this);
+                }
+                // Fallback if no original getter
+                return '/';
+              },
+              configurable: true,
+              enumerable: true
+            });
+            pathnameOverrideSucceeded = true;
+            log('Overrode location.pathname getter on Location prototype');
+            // Note: This may not work if instance property shadows prototype, but worth trying
+          } else {
+            log('Location prototype pathname also not configurable');
+          }
+        } catch (prototypeError) {
+          log('Could not override Location prototype pathname:', prototypeError);
         }
-        // If we already have a hash, continue - routers should use hash routing
-        log('Using hash-based routing (pathname not configurable)');
+        
+        // If prototype override also failed, try redirect strategy
+        if (!pathnameOverrideSucceeded) {
+          // If not configurable and we're on a full file path, redirect to index.html with hash
+          const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
+          if (isFullFilePath && !hasHash) {
+            // Extract directory and redirect to index.html with hash
+            const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
+            const newUrl = dir + 'index.html#/';
+            log('Redirecting to hash-based URL:', newUrl);
+            window.location.replace(newUrl);
+            return () => {}; // Return early - redirect will reload
+          }
+          // Set hash if not present (after checking if we need to redirect)
+          if (!hasHash) {
+            window.location.hash = '#/';
+            log('Set initial hash to #/');
+          }
+          // If we already have a hash, continue - routers should use hash routing
+          console.warn('[WebviewSPARouter] Could not override location.pathname. Routers that read pathname directly (like BrowserRouter) may not work correctly. Consider using HashRouter instead, or ensure the router reads from window.location.hash.');
+          log('Using hash-based routing (pathname not configurable)');
+        } else {
+          // Set initial hash if not present (after successful prototype override)
+          if (!window.location.hash || window.location.hash === '' || window.location.hash === '#') {
+            window.location.hash = '#/';
+            log('Set initial hash to #/');
+          }
+        }
       } else {
-        // Property is configurable or doesn't exist, try to override
+        // Property is configurable or doesn't exist, try to override on instance
         Object.defineProperty(window.location, 'pathname', {
           get: function() {
             const hash = window.location.hash;
@@ -138,22 +198,68 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
       }
     } catch (e) {
       console.warn('[WebviewSPARouter] Could not override location.pathname:', e);
-      // Fallback: If we're on a full file path, redirect to index.html with hash
-      const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
-      if (isFullFilePath && !hasHash) {
-        const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
-        const newUrl = dir + 'index.html#/';
-        log('Fallback: Redirecting to hash-based URL:', newUrl);
-        window.location.replace(newUrl);
-        return () => {}; // Return early - redirect will reload
+      
+      // Last resort: Try Location prototype
+      if (!pathnameOverrideSucceeded) {
+        try {
+          const LocationPrototype = Object.getPrototypeOf(window.location);
+          const prototypePathname = Object.getOwnPropertyDescriptor(LocationPrototype, 'pathname');
+          
+          if (prototypePathname && prototypePathname.configurable) {
+            // Store original getter before overriding
+            const originalPathnameGetter = prototypePathname.get;
+            
+            Object.defineProperty(LocationPrototype, 'pathname', {
+              get: function() {
+                if (this.protocol === 'file:') {
+                  const hash = this.hash;
+                  if (hash && hash !== '#' && hash !== '#/') {
+                    return hash.replace(/^#/, '');
+                  }
+                  return '/';
+                }
+                // For non-file protocols, use original getter
+                if (originalPathnameGetter) {
+                  return originalPathnameGetter.call(this);
+                }
+                return '/';
+              },
+              configurable: true,
+              enumerable: true
+            });
+            pathnameOverrideSucceeded = true;
+            log('Fallback: Overrode location.pathname getter on Location prototype');
+          }
+        } catch (prototypeError) {
+          log('Could not override Location prototype pathname:', prototypeError);
+        }
       }
-      // Set hash if not present (after checking if we need to redirect)
-      if (!hasHash) {
-        window.location.hash = '#/';
-        log('Set initial hash to #/');
+      
+      // Final fallback: redirect strategy
+      if (!pathnameOverrideSucceeded) {
+        const hasHash = window.location.hash && window.location.hash !== '' && window.location.hash !== '#';
+        if (isFullFilePath && !hasHash) {
+          const dir = currentPath.substring(0, currentPath.lastIndexOf('/') + 1);
+          const newUrl = dir + 'index.html#/';
+          log('Fallback: Redirecting to hash-based URL:', newUrl);
+          window.location.replace(newUrl);
+          return () => {}; // Return early - redirect will reload
+        }
+        // Set hash if not present (after checking if we need to redirect)
+        if (!hasHash) {
+          window.location.hash = '#/';
+          log('Set initial hash to #/');
+        }
+        // If we already have a hash, continue with hash-based routing
+        console.warn('[WebviewSPARouter] Could not override location.pathname. Routers that read pathname directly (like BrowserRouter) may not work correctly. Consider using HashRouter instead, or ensure the router reads from window.location.hash.');
+        log('Using hash-based routing fallback (pathname override failed)');
+      } else {
+        // Set initial hash if not present (after successful prototype override)
+        if (!window.location.hash || window.location.hash === '' || window.location.hash === '#') {
+          window.location.hash = '#/';
+          log('Set initial hash to #/');
+        }
       }
-      // If we already have a hash, continue with hash-based routing
-      log('Using hash-based routing fallback (pathname override failed)');
     }
   }
 
@@ -161,12 +267,15 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
   history.pushState = function(state: any, title: string, url?: string | URL | null) {
     if (url && typeof url === 'string') {
       const hash = pathToHash(url);
+      const route = hashToPath(hash);
       window.location.hash = hash;
       // Always use '/' as base pathname for file protocol to avoid file path issues
       const pathname = isFileProtocol ? '/' : window.location.pathname;
-      originalReplaceState(state, title, pathname + hash);
-      log('pushState:', url, '->', hash);
-      window.dispatchEvent(new PopStateEvent('popstate', { state: state }));
+      // Store route information in state so routers can read it if pathname override fails
+      const stateWithRoute = { ...state, route: route, pathname: route };
+      originalReplaceState(stateWithRoute, title, pathname + hash);
+      log('pushState:', url, '->', hash, 'route:', route);
+      window.dispatchEvent(new PopStateEvent('popstate', { state: stateWithRoute }));
       return;
     }
     return originalPushState(state, title, url);
@@ -176,11 +285,14 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
   history.replaceState = function(state: any, title: string, url?: string | URL | null) {
     if (url && typeof url === 'string') {
       const hash = pathToHash(url);
+      const route = hashToPath(hash);
       window.location.hash = hash;
       // Always use '/' as base pathname for file protocol to avoid file path issues
       const pathname = isFileProtocol ? '/' : window.location.pathname;
-      originalReplaceState(state, title, pathname + hash);
-      log('replaceState:', url, '->', hash);
+      // Store route information in state so routers can read it if pathname override fails
+      const stateWithRoute = { ...state, route: route, pathname: route };
+      originalReplaceState(stateWithRoute, title, pathname + hash);
+      log('replaceState:', url, '->', hash, 'route:', route);
       return;
     }
     return originalReplaceState(state, title, url);
@@ -188,12 +300,16 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
 
   // Handle hash changes and convert to popstate
   const hashChangeHandler = function() {
+    // Extract route from hash
+    const route = hashToPath(window.location.hash);
     // Always use '/' as base pathname for file protocol to avoid file path issues
     const pathname = isFileProtocol ? '/' : window.location.pathname;
-    originalReplaceState(null, '', pathname + window.location.hash);
-    log('hashchange -> popstate');
+    // Store route information in state so routers can read it if pathname override fails
+    const stateWithRoute = { ...(history.state || {}), route: route, pathname: route };
+    originalReplaceState(stateWithRoute, '', pathname + window.location.hash);
+    log('hashchange -> popstate, route:', route);
     window.dispatchEvent(new PopStateEvent('popstate', { 
-      state: history.state 
+      state: stateWithRoute 
     }));
   };
   window.addEventListener('hashchange', hashChangeHandler);
@@ -220,11 +336,17 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     // Convert internal link to hash-based
     e.preventDefault();
     const hash = pathToHash(href);
+    const route = hashToPath(hash);
     window.location.hash = hash;
-    log('Link click:', href, '->', hash);
+    // Always use '/' as base pathname for file protocol to avoid file path issues
+    const pathname = isFileProtocol ? '/' : window.location.pathname;
+    // Store route information in state so routers can read it if pathname override fails
+    const stateWithRoute = { ...(history.state || {}), route: route, pathname: route };
+    originalReplaceState(stateWithRoute, '', pathname + hash);
+    log('Link click:', href, '->', hash, 'route:', route);
     
     window.dispatchEvent(new PopStateEvent('popstate', { 
-      state: history.state 
+      state: stateWithRoute 
     }));
   };
   document.addEventListener('click', clickHandler, true);
@@ -238,20 +360,26 @@ export function initWebviewSPARouter(options: RouterFixOptions = {}): () => void
     
     initTimeout = window.setTimeout(function() {
       const hash = window.location.hash || '#/';
+      const route = hashToPath(hash);
       // Always use '/' as base pathname for file protocol to avoid file path issues
-      originalReplaceState(null, '', '/' + hash);
-      log('Initial popstate event');
+      // Store route information in state so routers can read it if pathname override fails
+      const stateWithRoute = { route: route, pathname: route };
+      originalReplaceState(stateWithRoute, '', '/' + hash);
+      log('Initial popstate event, route:', route);
       window.dispatchEvent(new PopStateEvent('popstate', { 
-        state: history.state 
+        state: stateWithRoute 
       }));
     }, initDelay);
   } else if (window.location.hash) {
     const path = hashToPath(window.location.hash);
-    originalReplaceState(null, '', window.location.pathname + window.location.hash);
+    const route = path;
+    // Store route information in state so routers can read it if pathname override fails
+    const stateWithRoute = { route: route, pathname: route };
+    originalReplaceState(stateWithRoute, '', window.location.pathname + window.location.hash);
     initTimeout = window.setTimeout(function() {
-      log('Initial popstate event');
+      log('Initial popstate event, route:', route);
       window.dispatchEvent(new PopStateEvent('popstate', { 
-        state: history.state 
+        state: stateWithRoute 
       }));
     }, initDelay);
   }
